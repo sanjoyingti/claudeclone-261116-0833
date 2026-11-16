@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Claude Clone</string>
+    <string name="api_alias_name">Claude API</string>
+</resources>
