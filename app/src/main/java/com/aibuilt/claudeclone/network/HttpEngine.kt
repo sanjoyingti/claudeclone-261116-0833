@@ -10,7 +10,11 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -21,6 +25,14 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
+
+/** What came back from a "which models may this key use" call. */
+data class ModelsResult(
+    val url: String,
+    val status: Int,
+    val models: List<String>,
+    val error: String
+)
 
 class HttpEngine {
 
@@ -55,19 +67,33 @@ class HttpEngine {
         return builder.build()
     }
 
+    /** GET a model list and pick the names out of whatever shape comes back. */
+    suspend fun listModels(url: String, headers: List<Pair<String, String>>): ModelsResult =
+        withContext(Dispatchers.IO) {
+            val builder = Request.Builder().url(url).get()
+            headers.forEach { (name, value) -> runCatching { builder.addHeader(name, value) } }
+            try {
+                client.newCall(builder.build()).execute().use { response ->
+                    val bodyText = runCatching { response.body?.string().orEmpty() }.getOrDefault("")
+                    if (!response.isSuccessful) {
+                        return@use ModelsResult(url, response.code, emptyList(), describeError(bodyText, response.code))
+                    }
+                    ModelsResult(url, response.code, parseModels(bodyText), "")
+                }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                ModelsResult(url, 0, emptyList(), error.javaClass.simpleName + ": " + (error.message ?: "no message"))
+            }
+        }
+
     fun stream(call: Call, url: String, responsePath: String): Flow<StreamEvent> = flow {
         try {
             call.execute().use { response ->
                 val source = response.body?.source()
                 if (!response.isSuccessful || source == null) {
                     val errorBody = runCatching { response.body?.string().orEmpty() }.getOrDefault("")
-                    emit(
-                        StreamEvent.Failed(
-                            url,
-                            "HttpStatus${response.code}",
-                            errorBody.take(300).ifBlank { response.message.ifBlank { "HTTP ${response.code}" } }
-                        )
-                    )
+                    emit(StreamEvent.Failed(url, "HttpStatus${response.code}", describeError(errorBody, response.code)))
                     emit(StreamEvent.Completed)
                     return@use
                 }
@@ -118,7 +144,7 @@ class HttpEngine {
                         return@use SendResult.Failure(
                             prepared.url,
                             "HttpStatus${response.code}",
-                            bodyText.take(300).ifBlank { "HTTP ${response.code} ${response.message}" }
+                            describeError(bodyText, response.code)
                         )
                     }
                     SendResult.Success(extractResponse(bodyText, responsePath))
@@ -139,7 +165,11 @@ class HttpEngine {
                         url = prepared.url,
                         status = "${response.code} ${response.message}".trim(),
                         exceptionClass = "",
-                        bodyHead = extractResponse(bodyText, responsePath).take(200),
+                        bodyHead = if (response.isSuccessful) {
+                            extractResponse(bodyText, responsePath).take(200)
+                        } else {
+                            describeError(bodyText, response.code).take(200)
+                        },
                         ran = true
                     )
                 }
@@ -155,6 +185,60 @@ class HttpEngine {
                 )
             }
         }
+
+    /** Turns a JSON or HTML error body into a short readable "403: message" line. */
+    private fun describeError(bodyText: String, code: Int): String {
+        val trimmed = bodyText.trim()
+        if (trimmed.isEmpty()) return "HTTP $code"
+        val parsed = runCatching { json.parseToJsonElement(trimmed) }.getOrNull()
+        val message = parsed?.let { firstMessage(it) }
+        if (!message.isNullOrBlank()) return "$code: $message"
+        if (trimmed.startsWith("<")) return "$code: ${trimmed.take(200)}"
+        return "$code: ${trimmed.take(300)}"
+    }
+
+    private fun firstMessage(element: JsonElement): String? = when (element) {
+        is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() }
+        is JsonArray -> element.firstNotNullOfOrNull { firstMessage(it) }
+        is JsonObject -> {
+            val direct = listOf("message", "error_description", "detail", "msg", "reason", "title")
+                .firstNotNullOfOrNull { key ->
+                    (element[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+                }
+            direct ?: listOf("error", "errors", "detail", "data")
+                .firstNotNullOfOrNull { key -> element[key]?.let { firstMessage(it) } }
+        }
+
+        else -> null
+    }
+
+    /** Reads every "id"/"name"/"model" string out of a model listing. */
+    private fun parseModels(bodyText: String): List<String> {
+        val root = runCatching { json.parseToJsonElement(bodyText) }.getOrNull() ?: return emptyList()
+        val arrays = mutableListOf<JsonArray>()
+        when (root) {
+            is JsonArray -> arrays.add(root)
+            is JsonObject -> listOf("data", "models", "result", "items", "available_models", "availableModels")
+                .forEach { key -> (root[key] as? JsonArray)?.let { arrays.add(it) } }
+
+            else -> Unit
+        }
+        val out = mutableListOf<String>()
+        arrays.forEach { array ->
+            array.forEach { element ->
+                val raw = when (element) {
+                    is JsonPrimitive -> element.contentOrNull
+                    is JsonObject -> listOf("id", "name", "model", "slug", "model_id")
+                        .firstNotNullOfOrNull { key -> (element[key] as? JsonPrimitive)?.contentOrNull }
+                    else -> null
+                }
+                if (!raw.isNullOrBlank()) {
+                    out.add(raw.removePrefix("models/").removePrefix("tunedModels/").trim())
+                }
+            }
+        }
+        return out.filter { it.isNotBlank() }.distinct().sorted()
+    }
 
     private fun extractResponse(bodyText: String, responsePath: String): String {
         if (bodyText.isBlank()) return "(empty body)"

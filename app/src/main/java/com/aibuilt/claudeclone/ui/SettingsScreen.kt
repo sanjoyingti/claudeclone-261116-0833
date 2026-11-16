@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -59,6 +60,7 @@ import com.aibuilt.claudeclone.model.Dialect
 import com.aibuilt.claudeclone.model.Presets
 import com.aibuilt.claudeclone.model.Profile
 import com.aibuilt.claudeclone.util.AppInfo
+import com.aibuilt.claudeclone.viewmodel.SettingsUiState
 import com.aibuilt.claudeclone.viewmodel.SettingsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -94,7 +96,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = "Paste your base URL and your API key. That is all the app needs — it works out the request shape from the address.",
+                text = "You only need the base URL and the key. Press Fetch models to see what this key is allowed to use, then tap one.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -177,6 +179,9 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                 supportingText = { Text("Leave it blank if your server needs no key. Missing auth is fine.") }
             )
 
+            SectionLabel("Model")
+            ModelSection(state = state, viewModel = viewModel)
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { viewModel.save() }, modifier = Modifier.weight(1f)) {
                     Text("Save")
@@ -211,6 +216,22 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                     onCopy = { text -> clipboard.setText(AnnotatedString(text)) },
                     onClear = viewModel::clearTest
                 )
+                if (state.test.status.startsWith("403") || state.test.bodyHead.contains("model", ignoreCase = true)) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(10.dp)) {
+                            Text(
+                                "403 means the address and key reached the server, but that model is not allowed for this key. Load the list and pick another.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            TextButton(onClick = viewModel::refreshModels) { Text("Fetch models") }
+                        }
+                    }
+                }
             }
 
             TextButton(onClick = viewModel::toggleAdvanced) {
@@ -239,7 +260,63 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
 }
 
 @Composable
-private fun AdvancedSection(viewModel: SettingsViewModel, state: com.aibuilt.claudeclone.viewmodel.SettingsUiState) {
+private fun ModelSection(state: SettingsUiState, viewModel: SettingsViewModel) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+            value = state.draft.model,
+            onValueChange = { value -> viewModel.pickModel(value) },
+            modifier = Modifier.weight(1f),
+            singleLine = true,
+            placeholder = { Text("model name") },
+            trailingIcon = {
+                if (state.loadingModels) {
+                    Box40 { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) }
+                } else {
+                    IconButton(onClick = viewModel::refreshModels) {
+                        Icon(Icons.Outlined.Refresh, contentDescription = "Fetch the model list")
+                    }
+                }
+            },
+            supportingText = { Text("Plain text. Tap the arrows to load the names this key can use, then tap one. You can also type any name.") }
+        )
+    }
+
+    if (state.modelsError.isNotBlank()) {
+        Text(
+            text = state.modelsError,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error
+        )
+    }
+
+    if (state.models.isNotEmpty()) {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(state.models, key = { it }) { name ->
+                FilterChip(
+                    selected = state.draft.model == name,
+                    onClick = { viewModel.pickModel(name) },
+                    label = { Text(name, style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Box40(content: @Composable () -> Unit) {
+    Row(
+        modifier = Modifier
+            .width(48.dp)
+            .height(48.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun AdvancedSection(viewModel: SettingsViewModel, state: SettingsUiState) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
             text = "Only needed when a server does not fit the usual shapes.",
@@ -254,16 +331,6 @@ private fun AdvancedSection(viewModel: SettingsViewModel, state: com.aibuilt.cla
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             placeholder = { Text("My server") }
-        )
-
-        SectionLabel("Model")
-        OutlinedTextField(
-            value = state.draft.model,
-            onValueChange = { value -> viewModel.edit { it.copy(model = value) } },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            placeholder = { Text("any-model-name") },
-            supportingText = { Text("Plain text. Filled in for you already; change it if your server wants another name.") }
         )
 
         SectionLabel("Request shape")
@@ -465,6 +532,13 @@ private fun ProfileRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (profile.model.isNotBlank()) {
+                    Text(
+                        text = "model: ${profile.model}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             IconButton(onClick = onDefault) {
                 Icon(

@@ -7,7 +7,6 @@ import com.aibuilt.claudeclone.data.AppContainer
 import com.aibuilt.claudeclone.model.Attachment
 import com.aibuilt.claudeclone.model.ChatMessage
 import com.aibuilt.claudeclone.model.Conversation
-import com.aibuilt.claudeclone.model.Presets
 import com.aibuilt.claudeclone.model.Profile
 import com.aibuilt.claudeclone.model.Role
 import com.aibuilt.claudeclone.model.SendResult
@@ -176,10 +175,12 @@ class ChatViewModel(private val container: AppContainer) : ViewModel() {
             _error.value = ChatError("Base URL is empty. Open Settings and paste your server address.")
             return
         }
-        val profile = stored.copy(
-            baseUrl = base,
-            model = stored.model.trim().ifBlank { Presets.suggestedModel(stored.dialect) }
-        )
+        val model = stored.model.trim()
+        if (model.isBlank()) {
+            _error.value = ChatError("No model set for this connection. Open Settings, press Fetch models and tap one.")
+            return
+        }
+        val profile = stored.copy(baseUrl = base, model = model)
 
         val history = store.messages(conversationId)
         if (history.isEmpty()) return
@@ -226,14 +227,22 @@ class ChatViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     private fun fail(conversationId: String, assistantId: String, url: String, exceptionClass: String, message: String) {
+        val hint = if (
+            exceptionClass.contains("403") || exceptionClass.contains("404") ||
+            message.contains("model", ignoreCase = true) || message.contains("not granted", ignoreCase = true)
+        ) {
+            "\n\nModel or route not allowed for this key. Open Settings, press Fetch models and tap one from the list."
+        } else {
+            ""
+        }
         store.updateMessage(conversationId, assistantId) {
             it.copy(
                 streaming = false,
                 error = true,
-                errorDetail = "$url\n$exceptionClass: $message"
+                errorDetail = "$url\n$exceptionClass: $message$hint"
             )
         }
-        _error.value = ChatError(message, url, exceptionClass)
+        _error.value = ChatError(message + hint, url, exceptionClass)
     }
 
     fun profileSummary(): Profile? = profileStore.current()

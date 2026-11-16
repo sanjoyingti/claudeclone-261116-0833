@@ -27,7 +27,10 @@ data class SettingsUiState(
     val test: TestOutput = TestOutput(),
     val savedFlash: Boolean = false,
     val advanced: Boolean = false,
-    val autoShape: Boolean = true
+    val autoShape: Boolean = true,
+    val models: List<String> = emptyList(),
+    val loadingModels: Boolean = false,
+    val modelsError: String = ""
 )
 
 class SettingsViewModel(private val container: AppContainer) : ViewModel() {
@@ -37,6 +40,8 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
+
+    private var autoFetched = false
 
     init {
         viewModelScope.launch {
@@ -56,6 +61,11 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
                         current.copy(profiles = snap.profiles, defaultId = snap.defaultId)
                     }
                 }
+                val draft = _state.value.draft
+                if (!autoFetched && _state.value.models.isEmpty() && draft.baseUrl.isNotBlank()) {
+                    autoFetched = true
+                    refreshModels()
+                }
             }
         }
     }
@@ -64,16 +74,26 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         val profile = store.profileById(id) ?: return
         store.setActive(id)
         _state.update {
-            it.copy(draft = profile, isNew = false, errors = emptyList(), test = TestOutput(), autoShape = false)
+            it.copy(draft = profile, isNew = false, errors = emptyList(), test = TestOutput(), autoShape = false, models = emptyList(), modelsError = "")
         }
+        if (profile.baseUrl.isNotBlank()) refreshModels()
     }
 
     fun newProfile() {
         val seed = Presets.templateFor(Dialect.ANTHROPIC).let { template ->
-            template.copy(name = "Profile ${_state.value.profiles.size + 1}", model = Presets.suggestedModel(Dialect.ANTHROPIC))
+            template.copy(name = "Profile ${_state.value.profiles.size + 1}")
         }
         _state.update {
-            it.copy(draft = seed, isNew = true, errors = emptyList(), test = TestOutput(), autoShape = true)
+            it.copy(
+                draft = seed,
+                isNew = true,
+                errors = emptyList(),
+                test = TestOutput(),
+                models = emptyList(),
+                modelsError = "",
+                savedFlash = false,
+                autoShape = true
+            )
         }
     }
 
@@ -85,7 +105,8 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
 
     /**
      * Typing a server address re-reads the shape it wants, but only until the user
-     * has picked a dialect by hand.
+     * has picked a dialect by hand. A model that was guessed is left open so the
+     * fetched list can replace it.
      */
     fun editBaseUrl(value: String) {
         _state.update { current ->
@@ -98,7 +119,7 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
                     draft = draft.copy(model = Presets.suggestedModel(draft.dialect))
                 }
             }
-            current.copy(draft = draft, errors = emptyList(), savedFlash = false)
+            current.copy(draft = draft, errors = emptyList(), savedFlash = false, modelsError = "")
         }
     }
 
@@ -119,6 +140,8 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
 
     fun setResponsePath(value: String) = edit { it.copy(responsePath = value) }
 
+    fun pickModel(name: String) = edit { it.copy(model = name) }
+
     fun addHeader() = edit { it.copy(extraHeaders = it.extraHeaders + HeaderPair()) }
 
     fun updateHeader(index: Int, key: String? = null, value: String? = null) = edit { profile ->
@@ -132,25 +155,41 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         profile.copy(extraHeaders = profile.extraHeaders.filterIndexed { position, _ -> position != index })
     }
 
-    fun save(): Boolean {
-        val draft = _state.value.draft
+    fun save() {
+        val current = _state.value
+        val draft = current.draft
         val repaired = RequestBuilder.repairBase(draft.baseUrl)
         val errors = buildList {
             if (repaired.isBlank()) {
-                add("Base URL is empty. Paste the server address, for example https://api.example.com/v1")
-            }
-            if (draft.model.trim().isBlank()) {
-                add("Model is empty. Type the model name your server expects (Advanced settings).")
+                add("Base URL is empty. Paste the address your key belongs to, for example https://api.example.com/v1")
             }
         }
         if (errors.isNotEmpty()) {
             _state.update { it.copy(errors = errors) }
-            return false
+            return
         }
+        val typedModel = draft.model.trim()
+        if (typedModel.isNotBlank() || current.models.isNotEmpty()) {
+            commit(draft, repaired, typedModel.ifBlank { current.models.firstOrNull().orEmpty() })
+            return
+        }
+        viewModelScope.launch {
+            val found = loadModels(repaired, draft)
+            if (found.isEmpty()) {
+                _state.update {
+                    it.copy(errors = listOf("No model chosen yet and the server handed out no list. Type a model name in the Model box, then save."))
+                }
+            } else {
+                commit(_state.value.draft, repaired, found.first())
+            }
+        }
+    }
+
+    private fun commit(draft: Profile, repairedBase: String, model: String) {
         val cleaned = draft.copy(
             name = draft.name.trim().ifBlank { "Profile" },
-            baseUrl = repaired,
-            model = draft.model.trim(),
+            baseUrl = repairedBase,
+            model = model.trim(),
             authHeaderName = draft.authHeaderName.trim(),
             authValuePrefix = draft.authValuePrefix.trim(),
             apiKey = draft.apiKey.trim(),
@@ -168,15 +207,54 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
                 autoShape = false
             )
         }
-        return true
     }
 
     fun delete(id: String) {
         store.delete(id)
-        _state.update { it.copy(errors = emptyList(), test = TestOutput()) }
+        _state.update { it.copy(errors = emptyList(), test = TestOutput(), models = emptyList(), modelsError = "") }
     }
 
     fun setDefault(id: String) = store.setDefault(id)
+
+    fun refreshModels() {
+        val draft = _state.value.draft
+        val base = RequestBuilder.repairBase(draft.baseUrl)
+        if (base.isBlank()) {
+            _state.update { it.copy(modelsError = "Fill in the base URL first.") }
+            return
+        }
+        viewModelScope.launch { loadModels(base, draft) }
+    }
+
+    private suspend fun loadModels(base: String, draft: Profile): List<String> {
+        _state.update { it.copy(loadingModels = true, modelsError = "") }
+        val headers = RequestBuilder.headersFor(draft)
+        var detail = ""
+        for (candidate in RequestBuilder.modelListUrls(draft, base)) {
+            val result = engine.listModels(candidate, headers)
+            if (result.models.isNotEmpty()) {
+                _state.update { current ->
+                    val kept = current.draft.model.trim().takeIf { value -> result.models.contains(value) }
+                    current.copy(
+                        loadingModels = false,
+                        models = result.models,
+                        modelsError = "",
+                        draft = current.draft.copy(model = kept ?: result.models.first())
+                    )
+                }
+                return result.models
+            }
+            detail = (if (result.status > 0) "${result.status} " else "") + result.error
+            if (result.status != 404 && result.status != 0) break
+        }
+        _state.update {
+            it.copy(
+                loadingModels = false,
+                modelsError = "The server gave no model list (${detail.ifBlank { "no answer" }}). Type the model name under Model instead."
+            )
+        }
+        return emptyList()
+    }
 
     fun testConnection() {
         val draft = _state.value.draft
@@ -185,11 +263,10 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
             _state.update { it.copy(errors = listOf("Base URL is empty, nothing to test.")) }
             return
         }
-        val probe = draft.copy(
-            baseUrl = repaired,
-            model = draft.model.trim().ifBlank { Presets.suggestedModel(draft.dialect) },
-            stream = false
-        )
+        val model = draft.model.trim().ifBlank {
+            _state.value.models.firstOrNull() ?: Presets.suggestedModel(draft.dialect)
+        }
+        val probe = draft.copy(baseUrl = repaired, model = model, stream = false)
         _state.update { it.copy(errors = emptyList(), testing = true, test = TestOutput()) }
         viewModelScope.launch {
             val prepared = runCatching {
@@ -206,6 +283,7 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
             }
             val output = engine.test(prepared, probe.responsePath)
             _state.update { it.copy(testing = false, test = output) }
+            if (_state.value.models.isEmpty()) loadModels(repaired, _state.value.draft)
         }
     }
 

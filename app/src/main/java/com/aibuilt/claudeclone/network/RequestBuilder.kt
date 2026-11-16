@@ -25,6 +25,13 @@ object RequestBuilder {
     private val knownEndpoints = listOf("/v1/messages", "/chat/completions")
     private val doubleSlash = Regex("(?<!:)/{2,}")
 
+    private fun tidy(url: String): String {
+        var value = url.replace(doubleSlash, "/")
+        while (value.contains("/v1/v1/")) value = value.replace("/v1/v1/", "/v1/")
+        while (value.contains("/v1beta/v1beta/")) value = value.replace("/v1beta/v1beta/", "/v1beta/")
+        return value
+    }
+
     /** Trims, collapses doubled slashes, strips a trailing endpoint and a trailing slash. */
     fun repairBase(raw: String): String {
         var value = raw.trim()
@@ -47,9 +54,7 @@ object RequestBuilder {
             else -> if (repairedBase.isEmpty()) filled else "$repairedBase/${filled.trimStart('/')}"
         }
         if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://$url"
-        // A base URL that already carries /v1 must not get a second one from the template.
-        while (url.contains("/v1/v1/")) url = url.replace("/v1/v1/", "/v1/")
-        url = url.replace(doubleSlash, "/")
+        url = tidy(url)
         if (profile.dialect == Dialect.GOOGLE && profile.apiKey.isNotBlank()) {
             val separator = if (url.contains("?")) "&" else "?"
             url = url + separator + "key=" + URLEncoder.encode(profile.apiKey.trim(), "UTF-8")
@@ -57,15 +62,33 @@ object RequestBuilder {
         return url
     }
 
+    /**
+     * Candidate addresses for "which models may this key use". Tried in order until
+     * one of them answers with a list.
+     */
+    fun modelListUrls(profile: Profile, repairedBase: String): List<String> {
+        if (repairedBase.isBlank()) return emptyList()
+        val candidates = listOf(
+            "$repairedBase/models",
+            "$repairedBase/v1/models",
+            "$repairedBase/v1beta/models"
+        ).map { tidy(it) }.distinct()
+        if (profile.dialect == Dialect.GOOGLE && profile.apiKey.isNotBlank()) {
+            val key = URLEncoder.encode(profile.apiKey.trim(), "UTF-8")
+            return candidates.map { "$it?key=$key" }
+        }
+        return candidates
+    }
+
     fun prepare(profile: Profile, history: List<ChatMessage>, repairedBase: String): PreparedRequest =
         PreparedRequest(
             url = resolveUrl(profile, repairedBase),
-            headers = headers(profile),
+            headers = headersFor(profile),
             body = buildBody(profile, history),
             stream = profile.stream
         )
 
-    private fun headers(profile: Profile): List<Pair<String, String>> {
+    fun headersFor(profile: Profile): List<Pair<String, String>> {
         val list = mutableListOf<Pair<String, String>>()
         list.add("Content-Type" to "application/json")
         list.add("Accept" to if (profile.stream) "text/event-stream" else "application/json")
@@ -180,11 +203,7 @@ object RequestBuilder {
                                         put("text", message.text)
                                     })
                                 }
-                                val blockType = when {
-                                    attachment.isImage -> "image"
-                                    attachment.isPdf -> "document"
-                                    else -> "document"
-                                }
+                                val blockType = if (attachment.isImage) "image" else "document"
                                 add(buildJsonObject {
                                     put("type", blockType)
                                     put("source", buildJsonObject {
@@ -192,7 +211,7 @@ object RequestBuilder {
                                         put("media_type", attachment.mime)
                                         put("data", attachment.base64)
                                     })
-                                    if (attachment.isPdf) put("title", attachment.name)
+                                    if (!attachment.isImage) put("title", attachment.name)
                                 })
                             })
                         }
