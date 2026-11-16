@@ -149,11 +149,11 @@ fun ChatScreen(viewModel: ChatViewModel, onOpenSettings: () -> Unit) {
                     attaching = attaching,
                     streaming = streaming,
                     onAttachPhoto = {
-                        photoLauncher?.launch(
+                        photoLauncher.launch(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                         )
                     },
-                    onAttachPdf = { pdfLauncher?.launch(arrayOf("application/pdf")) },
+                    onAttachPdf = { pdfLauncher.launch(arrayOf("application/pdf")) },
                     onClearAttachment = viewModel::clearAttachment,
                     onSend = viewModel::send,
                     onStop = viewModel::stop

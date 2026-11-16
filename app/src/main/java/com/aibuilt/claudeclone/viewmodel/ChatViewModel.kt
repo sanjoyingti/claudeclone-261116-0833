@@ -7,6 +7,7 @@ import com.aibuilt.claudeclone.data.AppContainer
 import com.aibuilt.claudeclone.model.Attachment
 import com.aibuilt.claudeclone.model.ChatMessage
 import com.aibuilt.claudeclone.model.Conversation
+import com.aibuilt.claudeclone.model.Presets
 import com.aibuilt.claudeclone.model.Profile
 import com.aibuilt.claudeclone.model.Role
 import com.aibuilt.claudeclone.model.SendResult
@@ -165,20 +166,20 @@ class ChatViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     private fun startCompletion(conversationId: String) {
-        val profile = profileStore.current()
-        if (profile == null) {
-            _error.value = ChatError("No connection profile yet. Open Settings and add one.")
+        val stored = profileStore.current()
+        if (stored == null) {
+            _error.value = ChatError("No connection yet. Open Settings and paste your base URL and key.")
             return
         }
-        val base = RequestBuilder.repairBase(profile.baseUrl)
+        val base = RequestBuilder.repairBase(stored.baseUrl)
         if (base.isBlank()) {
-            _error.value = ChatError("Base URL is empty. Open Settings and fill it in.")
+            _error.value = ChatError("Base URL is empty. Open Settings and paste your server address.")
             return
         }
-        if (profile.model.isBlank()) {
-            _error.value = ChatError("Model field is empty. Open Settings and fill it in.")
-            return
-        }
+        val profile = stored.copy(
+            baseUrl = base,
+            model = stored.model.trim().ifBlank { Presets.suggestedModel(stored.dialect) }
+        )
 
         val history = store.messages(conversationId)
         if (history.isEmpty()) return

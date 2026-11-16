@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -19,6 +21,8 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.StarBorder
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -34,16 +38,22 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.aibuilt.claudeclone.model.Dialect
 import com.aibuilt.claudeclone.model.Presets
@@ -56,6 +66,7 @@ import com.aibuilt.claudeclone.viewmodel.SettingsViewModel
 fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
     val state by viewModel.state.collectAsState()
     val clipboard = LocalClipboardManager.current
+    var showKey by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -83,7 +94,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = "Point the app at any server. Every field is free text — nothing is fixed.",
+                text = "Paste your base URL and your API key. That is all the app needs — it works out the request shape from the address.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -103,202 +114,72 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                 }
             }
 
-            SectionLabel("Saved profiles")
-            if (state.profiles.isEmpty()) {
-                Text(
-                    "No profiles yet. Tap Add profile.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            state.profiles.forEach { profile ->
-                ProfileRow(
-                    profile = profile,
-                    isDefault = profile.id == state.defaultId,
-                    isSelected = profile.id == state.draft.id && !state.isNew,
-                    onSelect = { viewModel.selectProfile(profile.id) },
-                    onDefault = { viewModel.setDefault(profile.id) },
-                    onDelete = { viewModel.delete(profile.id) }
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = viewModel::newProfile) {
-                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Add profile")
+            SectionLabel("Saved connections")
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(state.profiles, key = { it.id }) { profile ->
+                    FilterChip(
+                        selected = profile.id == state.draft.id && !state.isNew,
+                        onClick = { viewModel.selectProfile(profile.id) },
+                        label = { Text(profile.name, style = MaterialTheme.typography.labelSmall) },
+                        leadingIcon = if (profile.id == state.defaultId) {
+                            {
+                                Icon(
+                                    Icons.Filled.Star,
+                                    contentDescription = "Default",
+                                    modifier = Modifier.size(13.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        } else {
+                            null
+                        }
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = viewModel::newProfile,
+                        label = { Text("New", style = MaterialTheme.typography.labelSmall) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(13.dp))
+                        }
+                    )
                 }
             }
-
-            HorizontalDivider(Modifier.padding(vertical = 6.dp))
-
-            SectionLabel("Profile name")
-            OutlinedTextField(
-                value = state.draft.name,
-                onValueChange = { value -> viewModel.edit { it.copy(name = value) } },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                placeholder = { Text("My server") }
-            )
 
             SectionLabel("Base URL")
             OutlinedTextField(
                 value = state.draft.baseUrl,
-                onValueChange = { value -> viewModel.edit { it.copy(baseUrl = value) } },
+                onValueChange = viewModel::editBaseUrl,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 placeholder = { Text("https://api.example.com/v1") },
                 supportingText = {
-                    Text("Any scheme, host, port or path prefix. Trailing slashes and a pasted endpoint are removed on save.")
+                    Text("Full server address with scheme, host, port or path prefix. Trailing slashes and a pasted endpoint are tidied up on save.")
                 }
             )
 
-            SectionLabel("Model")
-            OutlinedTextField(
-                value = state.draft.model,
-                onValueChange = { value -> viewModel.edit { it.copy(model = value) } },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                placeholder = { Text("any-model-name") },
-                supportingText = { Text("Plain text. No list, no guessing.") }
-            )
-
-            SectionLabel("Dialect")
-            DialectPicker(
-                selected = state.draft.dialect,
-                onSelect = viewModel::setDialect
-            )
-
-            SectionLabel("Endpoint path template")
-            OutlinedTextField(
-                value = state.draft.pathTemplate,
-                onValueChange = { value -> viewModel.edit { it.copy(pathTemplate = value) } },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                placeholder = { Text("{base}/v1/messages") },
-                supportingText = { Text("{base} is the base URL, {model} is the URL-encoded model name.") }
-            )
-
-            SectionLabel("Auth header name")
-            OutlinedTextField(
-                value = state.draft.authHeaderName,
-                onValueChange = viewModel::setAuthHeader,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                placeholder = { Text("Authorization") },
-                supportingText = { Text("Leave empty for no auth header at all.") }
-            )
-            ChipRow(
-                values = Presets.authHeaderPresets,
-                onPick = viewModel::setAuthHeader
-            )
-
-            SectionLabel("Auth value prefix")
-            OutlinedTextField(
-                value = state.draft.authValuePrefix,
-                onValueChange = viewModel::setAuthPrefix,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                placeholder = { Text("Bearer") },
-                supportingText = { Text("\"raw\" or empty sends the key with no prefix.") }
-            )
-            ChipRow(
-                values = Presets.authPrefixPresets,
-                onPick = viewModel::setAuthPrefix
-            )
-
-            SectionLabel("Key / token")
+            SectionLabel("API key")
             OutlinedTextField(
                 value = state.draft.apiKey,
                 onValueChange = { value -> viewModel.edit { it.copy(apiKey = value) } },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                placeholder = { Text("sk-…") },
-                supportingText = { Text("Blank is allowed. For the Google dialect it is sent as a key query parameter.") }
-            )
-
-            SectionLabel("Extra headers")
-            state.draft.extraHeaders.forEachIndexed { index, pair ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    OutlinedTextField(
-                        value = pair.key,
-                        onValueChange = { value -> viewModel.updateHeader(index, key = value) },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        placeholder = { Text("Header") }
-                    )
-                    OutlinedTextField(
-                        value = pair.value,
-                        onValueChange = { value -> viewModel.updateHeader(index, value = value) },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        placeholder = { Text("Value") }
-                    )
-                    IconButton(onClick = { viewModel.removeHeader(index) }) {
-                        Icon(Icons.Outlined.Delete, contentDescription = "Remove header")
+                placeholder = { Text("your key") },
+                visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                trailingIcon = {
+                    IconButton(onClick = { showKey = !showKey }) {
+                        Icon(
+                            imageVector = if (showKey) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                            contentDescription = if (showKey) "Hide key" else "Show key"
+                        )
                     }
-                }
-            }
-            OutlinedButton(onClick = viewModel::addHeader) {
-                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Add header")
-            }
-
-            if (state.draft.dialect == Dialect.CUSTOM) {
-                SectionLabel("Custom JSON body")
-                OutlinedTextField(
-                    value = state.draft.customBody,
-                    onValueChange = { value -> viewModel.edit { it.copy(customBody = value) } },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(200.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                    placeholder = { Text("{\"model\": \"{model}\", \"prompt\": \"{text}\"}") },
-                    supportingText = { Text("Sent exactly as written. {model}, {text} and {system} are substituted.") }
-                )
-            }
-
-            SectionLabel("Response JSON path")
-            OutlinedTextField(
-                value = state.draft.responsePath,
-                onValueChange = viewModel::setResponsePath,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                placeholder = { Text("content[0].text") },
-                supportingText = { Text("If the path misses, the raw body is shown in the bubble instead of an error.") }
+                },
+                supportingText = { Text("Leave it blank if your server needs no key. Missing auth is fine.") }
             )
-            ChipRow(
-                values = Presets.responsePathPresets,
-                onPick = viewModel::setResponsePath
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    SectionLabel("Streaming")
-                    Text(
-                        text = "Off waits for the whole reply and shows it once.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = state.draft.stream,
-                    onCheckedChange = { value -> viewModel.edit { it.copy(stream = value) } }
-                )
-            }
-
-            HorizontalDivider(Modifier.padding(vertical = 6.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { viewModel.save() }, modifier = Modifier.weight(1f)) {
-                    Text("Save profile")
+                    Text("Save")
                 }
                 OutlinedButton(
                     onClick = viewModel::testConnection,
@@ -315,7 +196,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
 
             if (state.savedFlash) {
                 Text(
-                    "Saved.",
+                    "Saved. This connection is now the one the chat uses.",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -332,20 +213,180 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                 )
             }
 
+            TextButton(onClick = viewModel::toggleAdvanced) {
+                Text(if (state.advanced) "Hide advanced settings" else "Advanced settings")
+            }
+
+            if (state.advanced) {
+                AdvancedSection(viewModel = viewModel, state = state)
+            }
+
             HorizontalDivider(Modifier.padding(vertical = 10.dp))
 
             Text(
                 text = "Claude Clone ${AppInfo.VERSION}",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth()
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
-                text = "Look unchanged, brain swappable. Every request is assembled from the active profile.",
+                text = "Same look, swappable brain. Every request is built from the active connection.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(12.dp))
+        }
+    }
+}
+
+@Composable
+private fun AdvancedSection(viewModel: SettingsViewModel, state: com.aibuilt.claudeclone.viewmodel.SettingsUiState) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            text = "Only needed when a server does not fit the usual shapes.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        SectionLabel("Connection name")
+        OutlinedTextField(
+            value = state.draft.name,
+            onValueChange = { value -> viewModel.edit { it.copy(name = value) } },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            placeholder = { Text("My server") }
+        )
+
+        SectionLabel("Model")
+        OutlinedTextField(
+            value = state.draft.model,
+            onValueChange = { value -> viewModel.edit { it.copy(model = value) } },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            placeholder = { Text("any-model-name") },
+            supportingText = { Text("Plain text. Filled in for you already; change it if your server wants another name.") }
+        )
+
+        SectionLabel("Request shape")
+        DialectPicker(selected = state.draft.dialect, onSelect = viewModel::setDialect)
+
+        SectionLabel("Endpoint path template")
+        OutlinedTextField(
+            value = state.draft.pathTemplate,
+            onValueChange = { value -> viewModel.edit { it.copy(pathTemplate = value) } },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            placeholder = { Text("{base}/v1/messages") },
+            supportingText = { Text("{base} is the base URL, {model} is the URL-encoded model name.") }
+        )
+
+        SectionLabel("Auth header name")
+        OutlinedTextField(
+            value = state.draft.authHeaderName,
+            onValueChange = viewModel::setAuthHeader,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            placeholder = { Text("Authorization") },
+            supportingText = { Text("Leave empty for no auth header at all.") }
+        )
+        ChipRow(values = Presets.authHeaderPresets, onPick = viewModel::setAuthHeader)
+
+        SectionLabel("Auth value prefix")
+        OutlinedTextField(
+            value = state.draft.authValuePrefix,
+            onValueChange = viewModel::setAuthPrefix,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            placeholder = { Text("Bearer") },
+            supportingText = { Text("\"raw\" or empty sends the key with no prefix.") }
+        )
+        ChipRow(values = Presets.authPrefixPresets, onPick = viewModel::setAuthPrefix)
+
+        SectionLabel("Extra headers")
+        state.draft.extraHeaders.forEachIndexed { index, pair ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                OutlinedTextField(
+                    value = pair.key,
+                    onValueChange = { value -> viewModel.updateHeader(index, key = value) },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    placeholder = { Text("Header") }
+                )
+                OutlinedTextField(
+                    value = pair.value,
+                    onValueChange = { value -> viewModel.updateHeader(index, value = value) },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    placeholder = { Text("Value") }
+                )
+                IconButton(onClick = { viewModel.removeHeader(index) }) {
+                    Icon(Icons.Outlined.Delete, contentDescription = "Remove header")
+                }
+            }
+        }
+        OutlinedButton(onClick = viewModel::addHeader) {
+            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Add header")
+        }
+
+        if (state.draft.dialect == Dialect.CUSTOM) {
+            SectionLabel("Custom JSON body")
+            OutlinedTextField(
+                value = state.draft.customBody,
+                onValueChange = { value -> viewModel.edit { it.copy(customBody = value) } },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp),
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                placeholder = { Text("{\"model\": \"{model}\", \"prompt\": \"{text}\"}") },
+                supportingText = { Text("Sent exactly as written. {model}, {text} and {system} are substituted.") }
+            )
+        }
+
+        SectionLabel("Response JSON path")
+        OutlinedTextField(
+            value = state.draft.responsePath,
+            onValueChange = viewModel::setResponsePath,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            placeholder = { Text("content[0].text") },
+            supportingText = { Text("If the path misses, the raw body is shown in the bubble instead of an error.") }
+        )
+        ChipRow(values = Presets.responsePathPresets, onPick = viewModel::setResponsePath)
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                SectionLabel("Streaming")
+                Text(
+                    text = "Off waits for the whole reply and shows it once.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = state.draft.stream,
+                onCheckedChange = { value -> viewModel.edit { it.copy(stream = value) } }
+            )
+        }
+
+        HorizontalDivider(Modifier.padding(vertical = 6.dp))
+        SectionLabel("Manage saved connections")
+        state.profiles.forEach { profile ->
+            ProfileRow(
+                profile = profile,
+                isDefault = profile.id == state.defaultId,
+                isSelected = profile.id == state.draft.id && !state.isNew,
+                onSelect = { viewModel.selectProfile(profile.id) },
+                onDefault = { viewModel.setDefault(profile.id) },
+                onDelete = { viewModel.delete(profile.id) }
+            )
         }
     }
 }
@@ -362,8 +403,8 @@ private fun SectionLabel(text: String) {
 
 @Composable
 private fun ChipRow(values: List<String>, onPick: (String) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        values.forEach { value ->
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        items(values) { value ->
             AssistChip(
                 onClick = { onPick(value) },
                 label = { Text(value, style = MaterialTheme.typography.labelSmall) }
@@ -437,7 +478,7 @@ private fun ProfileRow(
                 AssistChip(onClick = onSelect, label = { Text("Use", style = MaterialTheme.typography.labelSmall) })
             }
             IconButton(onClick = onDelete) {
-                Icon(Icons.Outlined.Delete, contentDescription = "Delete profile")
+                Icon(Icons.Outlined.Delete, contentDescription = "Delete connection")
             }
         }
     }

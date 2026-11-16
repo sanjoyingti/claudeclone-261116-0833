@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <color name="cream">#F0EEE6</color>
+    <color name="night_bg">#1C1B19</color>
     <color name="ic_launcher_background">#F0EEE6</color>
 </resources>

@@ -23,12 +23,13 @@ data class PreparedRequest(
 object RequestBuilder {
 
     private val knownEndpoints = listOf("/v1/messages", "/chat/completions")
+    private val doubleSlash = Regex("(?<!:)/{2,}")
 
     /** Trims, collapses doubled slashes, strips a trailing endpoint and a trailing slash. */
     fun repairBase(raw: String): String {
         var value = raw.trim()
         if (value.isEmpty()) return ""
-        value = value.replace(Regex("(?<!:)/{2,}"), "/")
+        value = value.replace(doubleSlash, "/")
         for (endpoint in knownEndpoints) {
             if (value.endsWith(endpoint)) value = value.removeSuffix(endpoint)
         }
@@ -46,6 +47,9 @@ object RequestBuilder {
             else -> if (repairedBase.isEmpty()) filled else "$repairedBase/${filled.trimStart('/')}"
         }
         if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://$url"
+        // A base URL that already carries /v1 must not get a second one from the template.
+        while (url.contains("/v1/v1/")) url = url.replace("/v1/v1/", "/v1/")
+        url = url.replace(doubleSlash, "/")
         if (profile.dialect == Dialect.GOOGLE && profile.apiKey.isNotBlank()) {
             val separator = if (url.contains("?")) "&" else "?"
             url = url + separator + "key=" + URLEncoder.encode(profile.apiKey.trim(), "UTF-8")
